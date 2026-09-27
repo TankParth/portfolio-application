@@ -1,17 +1,40 @@
 name: Build Android APK
 
+# Builds, tests and publishes the Android APK.
+#
+# Every successful build on `main` is published as a GitHub Release, so the
+# newest APK is always at a permanent public URL (used by the website's
+# "Get the Android App" button):
+#   https://github.com/TankParth/portfolio-application/releases/latest/download/parth-tank-portfolio.apk
+#
+# Signing: add these repository secrets (Settings → Secrets and variables →
+# Actions) to sign with your own release key. Without them the build falls
+# back to a throwaway debug key, and a new APK can't be installed over an
+# older one.
+#   ANDROID_KEYSTORE_BASE64   base64 of your upload keystore (.jks)
+#   ANDROID_KEYSTORE_PASSWORD keystore password
+#   ANDROID_KEY_ALIAS         key alias (e.g. "upload")
+#   ANDROID_KEY_PASSWORD      key password
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write # needed to create releases
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      HAS_RELEASE_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      APK_NAME: parth-tank-portfolio.apk
 
     steps:
       - name: Checkout repository
@@ -32,16 +55,62 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Analyze
+        run: flutter analyze
+
       - name: Run tests
         run: flutter test
 
-      - name: Build APK
-        run: flutter build apk --release
+      - name: Configure release signing
+        if: env.HAS_RELEASE_KEY == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+          {
+            echo "storeFile=upload-keystore.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > android/key.properties
 
-      - name: Upload APK
+      - name: Warn about debug signing
+        if: env.HAS_RELEASE_KEY != 'true'
+        run: echo "::warning::No release key secrets set — APK is signed with a CI debug key and won't install over previous builds."
+
+      # The run number becomes the Android versionCode, so every build is an
+      # upgrade of the previous one. versionName comes from pubspec.yaml.
+      - name: Build APK
+        run: flutter build apk --release --build-number=${{ github.run_number }}
+
+      - name: Name the APK
+        run: cp build/app/outputs/flutter-apk/app-release.apk "$APK_NAME"
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: portfolio-android-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: ${{ env.APK_NAME }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Portfolio app — build ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          make_latest: "true"
+          files: ${{ env.APK_NAME }}
+          body: |
+            Android APK for the Parth Tank portfolio app, built from ${{ github.sha }}.
+
+            The app loads the live site (https://parthtankdev.vercel.app), so website
+            updates appear without a new APK. A new build is only needed when the app
+            itself changes.
+
+            Signed with: ${{ env.HAS_RELEASE_KEY == 'true' && 'release key' || 'CI debug key (uninstall older builds first)' }}
