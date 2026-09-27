@@ -1,0 +1,6 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Portfolio dark background (site bg), so launch has no white flash -->
+    <color name="splash_bg">#070710</color>
+	<color name="ic_launcher_background">#070710</color>
+</resources>
